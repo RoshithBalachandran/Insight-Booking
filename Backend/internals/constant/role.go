@@ -2,6 +2,6 @@ package constant
 
 const (
 	Admin     = "ADMIN"
-	User      = "User"
-	Counselor = "Counselor"
+	User      = "USER"
+	Counselor = "COUNSELOR"
 )

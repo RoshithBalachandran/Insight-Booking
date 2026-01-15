@@ -38,7 +38,11 @@ func Connect() {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	if err := DB.AutoMigrate(&models.User{}); err != nil {
+	if err := DB.AutoMigrate(&models.User{},
+		&models.RefreshToken{},
+		&models.Service{},
+		&models.Counselor{},
+	); err != nil {
 		log.Fatal("failed to automigrate:", err)
 	}
 

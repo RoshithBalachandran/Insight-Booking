@@ -6,27 +6,37 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/insight/database"
+	"github.com/insight/internals/redis"
 	"github.com/insight/routes"
+	"github.com/insight/seeders"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-
-	// env load
-	err := godotenv.Load("../.env")
-	if err != nil {
-		log.Fatal("failed to load env")
+	// Load env
+	if err := godotenv.Load("../.env"); err != nil {
+		log.Fatal("Failed to load env")
 	}
-	//database connection
+
+	// Connect DB
 	database.Connect()
+
+	// Connect Redis
+	redis.ConnectRedis()
+
+	//Seed Admin
+	seeders.SeedAdminDetails()
+	// Setup router
 	r := gin.Default()
-	//port Setup
+	//users routes
+	routes.SetupRouter(r)
+	//Admin Routes
+	routes.SetUpAdminRoutes(r)
+	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	//setup Routes
-	routes.SetupRouter(r)
 
 	r.Run(":" + port)
 }
