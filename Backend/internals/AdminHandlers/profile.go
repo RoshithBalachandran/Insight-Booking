@@ -2,6 +2,7 @@ package adminhandlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/insight/database"
@@ -11,84 +12,145 @@ import (
 
 // GetAdminProfile returns profile info for admins only
 func GetAdminProfile(c *gin.Context) {
+	//Get authenticated admin ID
 	userID, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
-	var admin models.User
-	err := database.DB.Select("id, first_name, last_name, email, role, is_active, created_at").
+	//Response DTO
+	type AdminProfileResponse struct {
+		ID        uint      `json:"id"`
+		FirstName string    `json:"first_name"`
+		LastName  string    `json:"last_name"`
+		Email     string    `json:"email"`
+		Role      string    `json:"role"`
+		IsActive  bool      `json:"is_active"`
+		JoinedAt  time.Time `json:"joined_at"`
+	}
+
+	var profile AdminProfileResponse
+
+	//Fetch admin safely
+	err := database.DB.
+		Model(&models.User{}).
+		Select("id, first_name, last_name, email, role, is_active, created_at").
 		Where("id = ? AND role = ?", userID, constant.Admin).
-		First(&admin).Error
+		Scan(&profile).Error
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "admin not found"})
 		return
 	}
 
-	if !admin.IsActive {
-		c.JSON(http.StatusForbidden, gin.H{"error": "admin is inactive"})
+	//Account state checks
+	if !profile.IsActive {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin account is inactive"})
 		return
 	}
 
+	//Success response
 	c.JSON(http.StatusOK, gin.H{
-		"id":         admin.ID,
-		"first_name": admin.FirstName,
-		"last_name":  admin.LastName,
-		"email":      admin.Email,
-		"role":       admin.Role,
-		"joined_at":  admin.CreatedAt,
+		"data": profile,
 	})
 }
 
 func UpdateAdminProfile(c *gin.Context) {
-	//Get logged user id
-	userId, exist := c.Get("user_id")
-	if !exist {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorised"})
+	// 1. Get logged-in user ID
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	//bind json input
-	var input struct {
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		Email     string `json:"email"`
+
+	//Request DTO
+	type UpdateAdminProfileInput struct {
+		FirstName *string `json:"first_name" binding:"omitempty,min=2,max=100"`
+		LastName  *string `json:"last_name"  binding:"omitempty,min=2,max=100"`
+		Email     *string `json:"email"      binding:"omitempty,email"`
 	}
+
+	var input UpdateAdminProfileInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
 
-	// fetch data from db
+	//Fetch admin from DB
 	var admin models.User
-	err := database.DB.Where("id=? AND Role=?", userId, constant.Admin).First(&admin).Error
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "admin details not found"})
+	if err := database.DB.
+		Where("id = ? AND role = ?", userID, constant.Admin).
+		First(&admin).Error; err != nil {
+
+		c.JSON(http.StatusNotFound, gin.H{"error": "admin not found"})
 		return
 	}
 
-	//prevent admin is inactive
+	//Status checks
 	if !admin.IsActive {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Admin is inactive"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin account is inactive"})
+		return
+	}
+	if admin.Block {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin account is blocked"})
 		return
 	}
 
-	//update fields
-	admin.FirstName = input.FirstName
-	admin.LastName = input.LastName
-	admin.Email = input.Email
+	//Email uniqueness validation (only if changed)
+	if input.Email != nil && *input.Email != admin.Email {
+		var count int64
+		if err := database.DB.
+			Model(&models.User{}).
+			Where("email = ?", *input.Email).
+			Count(&count).Error; err != nil {
 
-	//save data into the database
-	if err = database.DB.Save(&admin).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate email"})
+			return
+		}
+
+		if count > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "email already in use"})
+			return
+		}
+	}
+
+	//Apply only provided fields
+	updates := map[string]interface{}{}
+
+	if input.FirstName != nil {
+		updates["first_name"] = *input.FirstName
+	}
+	if input.LastName != nil {
+		updates["last_name"] = *input.LastName
+	}
+	if input.Email != nil {
+		updates["email"] = *input.Email
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields provided for update"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"sucess": "Profile updated sucessfully",
-		"id":         admin.ID,
-		"first_name": admin.FirstName,
-		"last_name":  admin.LastName,
-		"email":      admin.Email,
-		"role":       admin.Role,
+
+	//Update DB
+	if err := database.DB.
+		Model(&admin).
+		Updates(updates).Error; err != nil {
+
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
+		return
+	}
+
+	//Success response
+	c.JSON(http.StatusOK, gin.H{
+		"message": "profile updated successfully",
+		"data": gin.H{
+			"id":         admin.ID,
+			"first_name": admin.FirstName,
+			"last_name":  admin.LastName,
+			"email":      admin.Email,
+			"role":       admin.Role,
+		},
 	})
 }
